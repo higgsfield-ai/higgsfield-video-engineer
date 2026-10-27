@@ -1,0 +1,26 @@
+{
+ "version": 1,
+ "render": { "width": 960, "height": 720, "spp": 256, "maxBounces": 8, "post": { "tonemap": "agx", "exposure": 0.2 } },
+ "camera": { "position": [0, 0.9, 3.4], "target": [0, 0.45, 0], "fov": 36, "fstop": 4, "focusTarget": [0, 0.45, 0] },
+ "materials": [
+  { "baseColor": [0.62, 0.6, 0.57], "roughness": 0.85 },
+  { "baseColor": [0.9, 0.62, 0.1], "roughness": 1, "sheenColor": [0.9, 0.75, 0.4], "sheenRoughness": 0.35 },
+  { "baseColor": [1, 0.77, 0.34], "metallic": 1, "roughness": 0.3 },
+  { "baseColor": [1, 1, 1], "transmission": 1, "ior": 1.5, "roughness": 0 }
+ ],
+ "meshes": [
+  { "name": "floor", "primitive": "box", "size": [6, 0.1, 6], "materials": [0] },
+  { "name": "ball", "primitive": "sphere", "radius": 0.4, "segments": 128, "rings": 64, "materials": [1] }
+ ],
+ "instances": [
+  { "mesh": 0, "position": [0, -0.05, 0] },
+  { "mesh": 1, "position": [-0.95, 0.4, 0] },
+  { "mesh": 1, "position": [0, 0.4, -0.3], "materials": [2] },
+  { "mesh": 1, "position": [0.95, 0.4, 0], "materials": [3] }
+ ],
+ "lights": [
+  { "type": "rect", "position": [-2, 2.6, 2], "target": [0, 0.4, 0], "size": [1.2, 1.2], "color": [1, 0.9, 0.78], "intensity": 9 },
+  { "type": "rect", "position": [1.6, 1.6, -2], "target": [0, 0.4, 0], "size": [0.8, 0.8], "color": [0.7, 0.8, 1], "intensity": 10, "visible": false }
+ ],
+ "environment": { "type": "color", "color": [0.08, 0.09, 0.12], "intensity": 1 }
+}

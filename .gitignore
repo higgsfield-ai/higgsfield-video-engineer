@@ -1,0 +1,28 @@
+node_modules/
+out/
+projects/
+engine/tests/out/
+engine/proofs/out/
+engine/proofs/assets/
+hello.png
+*.pfm
+.DS_Store
+__pycache__/
+
+# credentials: never commit
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.npmrc
+.pypirc
+.runpod/
+.rp/
+
+# the example ships without its concept images and music (rights)
+examples/*/refs/
+examples/*/music/

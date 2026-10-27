@@ -1,0 +1,133 @@
+#!/bin/bash
+# rp — run path-tracer jobs on your Runpod RTX 4090 pods (same interface as `rtx node`), plus a chunk pool.
+#
+# Configuration (environment):
+#   RP_LEDGER   tab-separated pod ledger written by rp_pod/create.sh (default: $HOME/.rp/pods.tsv)
+#               columns: pod_id, name, owner tag, ISO time, purpose
+#   RP_OWNER    owner tag; only ledger rows with this tag are used (default: $USER)
+#   RP_SSH_KEY  ssh private key registered with Runpod (default: $HOME/.runpod/ssh/runpodctl-ssh-key)
+#   RUNPODCTL   runpodctl binary (default: runpodctl on PATH; it reads RUNPOD_API_KEY from the environment)
+#   RP_NODE_MODULES  node_modules with puppeteer-core (+ three) to push to pods (default: <kit>/engine/node_modules)
+#
+#   rp pods                     list your pods (from the ledger, RP_OWNER rows) + busy state
+#   rp setup [pod ...]          install Node/Chrome/Vulkan + puppeteer-core/three on pods (idempotent)
+#   rp node <project_dir> <script.mjs> <pull_path> [-- script args]
+#       Rsyncs <project_dir> to the pod (incremental, kept between jobs),
+#       runs `node <script> args` there (Chrome WebGPU on the NVIDIA GPU via Vulkan), pulls <pull_path> back.
+#       Pod: $RP_POD (r1 | <name>-r1 | pod id) or the first free pod (waits while all are busy).
+#   rp sh <pod> '<command>'     shell on a pod
+#   rp pool <driver.mjs> <frames a-b> <frames_dir> [--chunk N] [--workers r1,r2,r3] [-- driver args]
+#       Hands chunks of frames missing from <frames_dir> to whichever worker is free. Each chunk runs
+#       `node <driver> <driver args> --frames a-b` with FILM_STAGE=_stage_<worker> and FILM_RUNNER=rp/RP_POD
+#       Drivers must accept --frames a-b and run their render through $FILM_RUNNER (the example film uses
+#       examples/felt-good-morning/tools/final_pod.sh instead: one frame range per pod).
+#   rp status                   nvidia-smi on every pod
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+SESSION=${RP_OWNER:-$USER}
+LEDGER=${RP_LEDGER:-$HOME/.rp/pods.tsv}
+KEY=${RP_SSH_KEY:-$HOME/.runpod/ssh/runpodctl-ssh-key}
+RPC=${RUNPODCTL:-runpodctl}
+NM=${RP_NODE_MODULES:-$HERE/../engine/node_modules}
+ST=$HOME/.cache/rp; mkdir -p "$ST/lock" "$ST/cm"
+CHROME_ARGS='--no-sandbox --enable-features=Vulkan --use-angle=vulkan'
+die() { echo "rp: $*" >&2; exit 1; }
+[ $# -ge 1 ] || { sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 1; }
+
+pods() { awk -F'\t' -v s="$SESSION" '$3==s {print $1"\t"$2}' "$LEDGER"; }   # id<TAB>name
+resolve() {  # r1 | name | id -> id
+  local q=$1; pods | awk -F'\t' -v q="$q" '$1==q || $2==q || $2 ~ ("-" q "$") {print $1; exit}'
+}
+name_of() { pods | awk -F'\t' -v id="$1" '$1==id {print $2}'; }
+addr() {  # id -> "ip port" (cached)
+  local id=$1 c="$ST/addr_$1"
+  if [ ! -s "$c" ]; then
+    $RPC pod get "$id" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin)['ssh'];print(d['ip'],d['port'])" > "$c" 2>/dev/null || { : > "$c"; die "pod $id not ready (no ssh)"; }
+  fi
+  cat "$c"
+}
+ssh_opts() { echo "-i $KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 -o ControlMaster=auto -o ControlPath=$ST/cm/%C -o ControlPersist=10m"; }
+pssh() { local id=$1; shift; read -r ip port < <(addr "$id"); ssh $(ssh_opts) -p "$port" root@"$ip" "$@"; }
+rsync_e() { local id=$1; read -r ip port < <(addr "$id"); echo "ssh $(ssh_opts) -p $port"; }
+host_of() { read -r ip port < <(addr "$1"); echo "root@$ip"; }
+# Upload allowlist: only code, scene data and images. Hidden files (.env, .ssh, .npmrc), key files, node_modules and
+# symlinks that point outside the folder are never sent.
+PUSH_FILTER=(--safe-links --prune-empty-dirs --exclude '.*' --exclude node_modules --exclude renders --exclude '*.pem' --exclude '*.key'
+  --exclude 'id_*' --include '*/' --include '*.mjs' --include '*.js' --include '*.json' --include '*.wgsl' --include '*.html'
+  --include '*.png' --include '*.jpg' --include '*.jpeg' --include '*.hdr' --include '*.bin' --include '*.pfm' --exclude '*')
+push() { local id=$1 src=$2 dst=$3; shift 3; COPYFILE_DISABLE=1 rsync -a "$@" "${PUSH_FILTER[@]}" -e "$(rsync_e "$id")" "$src" "$(host_of "$id"):$dst"; }
+
+lock_try() {  # atomic per-pod lock; stale locks (dead pid) are taken over
+  local d="$ST/lock/$1"
+  if mkdir "$d" 2>/dev/null; then echo $$ > "$d/pid"; return 0; fi
+  local p; p=$(cat "$d/pid" 2>/dev/null || true)
+  if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then echo $$ > "$d/pid"; return 0; fi
+  return 1
+}
+lock_release() { local d="$ST/lock/$1"; [ "$(cat "$d/pid" 2>/dev/null)" = "$$" ] && find "$d" -mindepth 1 -delete && rmdir "$d" || true; }
+
+pick_pod() {
+  if [ -n "${RP_POD:-}" ]; then
+    local id; id=$(resolve "$RP_POD"); [ -n "$id" ] || die "unknown pod $RP_POD"
+    local n=0; until lock_try "$id"; do [ $((n++ % 12)) -eq 0 ] && echo "rp: $(name_of "$id") busy, waiting" >&2; sleep 5; done
+    echo "$id"; return
+  fi
+  local n=0
+  while true; do
+    for id in $(pods | cut -f1); do lock_try "$id" && { echo "$id"; return; }; done
+    [ $((n++ % 12)) -eq 0 ] && echo "rp: all pods busy, waiting" >&2; sleep 5
+  done
+}
+
+mode=$1; shift
+case "$mode" in
+  pods)
+    pods | while IFS=$'\t' read -r id name; do
+      b=free; [ -d "$ST/lock/$id" ] && kill -0 "$(cat "$ST/lock/$id/pid" 2>/dev/null)" 2>/dev/null && b="busy (pid $(cat "$ST/lock/$id/pid"))"
+      echo "$name  $id  $(addr "$id" 2>/dev/null || echo '?')  $b"
+    done ;;
+  status)
+    for id in $(pods | cut -f1); do echo "== $(name_of "$id")"; pssh "$id" 'nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader; pgrep -fa "node " | grep -v pgrep | cut -c1-150' || true; done ;;
+  setup)
+    ids=(); if [ $# -ge 1 ]; then for q in "$@"; do ids+=("$(resolve "$q")"); done; else ids=($(pods | cut -f1)); fi
+    tmp=$(mktemp -d)
+    [ -d "$NM/puppeteer-core" ] || die "no puppeteer-core in $NM (run ./setup.sh first)"
+    ( cd "$NM" && COPYFILE_DISABLE=1 tar --no-xattrs -czf "$tmp/nm.tgz" $(ls -d puppeteer-core @puppeteer modern-tar yargs cliui string-width get-east-asian-width strip-ansi ansi-regex wrap-ansi ansi-styles escalade get-caller-file y18n yargs-parser chromium-bidi mitt zod devtools-protocol typed-query-selector webdriver-bidi-protocol ws debug ms three 2>/dev/null) )
+    for id in "${ids[@]}"; do
+      ( pssh "$id" 'mkdir -p /opt/rp/node_modules /work && tar -xzf - -C /opt/rp/node_modules 2>/dev/null' < "$tmp/nm.tgz"
+        for f in setup.sh probe.mjs; do pssh "$id" "cat > /opt/rp/$f" < "$HERE/rp_pod/$f"; done
+        out=$(pssh "$id" "bash /opt/rp/setup.sh 2>&1 | tail -6; cd /opt/rp && NODE_PATH=/opt/rp/node_modules node probe.mjs $CHROME_ARGS 2>&1 | tail -1")
+        echo "== $(name_of "$id") ($id)"; echo "$out" ) &
+    done
+    wait; find "$tmp" -mindepth 1 -delete; rmdir "$tmp" ;;
+  sh)
+    id=$(resolve "${1:?pod}"); shift; pssh "$id" "$@" ;;
+  node)
+    proj=$(cd "${1:?project dir}" && pwd); script=${2:?script}; pullp=${3:?path to pull}; shift 3
+    [ "${1:-}" = -- ] && shift
+    id=$(pick_pod); trap 'lock_release '"$id" EXIT
+    name=$(name_of "$id")
+    rdir="/work/$(basename "$proj")_$(printf '%s' "$proj" | (md5 2>/dev/null || md5sum) | cut -c1-8)"
+    jid="rp_$(date +%Y%m%d_%H%M%S)_$$"
+    t0=$(date +%s)
+    pssh "$id" "mkdir -p $rdir/$pullp && find $rdir/$pullp -mindepth 1 -delete"
+    push "$id" "$proj/" "$rdir/" --exclude "/$pullp" $([ -L "$proj/engine" ] && echo --exclude /engine)
+    [ -L "$proj/engine" ] && push "$id" "$(cd "$proj/engine" && pwd -P)/" "$rdir/engine/"   # a linked engine is sent as real files
+    t1=$(date +%s)
+    args=$(printf ' %q' "$@")
+    pssh "$id" "cd $rdir && nohup env NODE_PATH=/opt/rp/node_modules PT_CHROME=/usr/bin/google-chrome PT_CHROME_ARGS='$CHROME_ARGS' bash -c 'node $script $args > /work/$jid.log 2>&1; echo \$? > /work/$jid.code' < /dev/null > /dev/null 2>&1 &"
+    echo "rp: job $jid on $name — push $((t1 - t0)) s, running (log: /work/$jid.log)"
+    t=0
+    until pssh "$id" "test -f /work/$jid.code" 2>/dev/null; do
+      sleep 5; t=$((t + 5))
+      [ $((t % 60)) -eq 0 ] && echo "rp: $name ${t}s… $(pssh "$id" "tail -c 300 /work/$jid.log | tr '\r' '\n' | tail -1" 2>/dev/null | cut -c1-140)"
+    done
+    code=$(pssh "$id" "cat /work/$jid.code" | tr -dc '0-9')
+    if [ "${code:-1}" != 0 ]; then pssh "$id" "tail -40 /work/$jid.log" >&2; die "job failed on $name (exit ${code:-?}); log $name:/work/$jid.log"; fi
+    mkdir -p "$proj/$pullp"
+    rsync -a -e "$(rsync_e "$id")" "$(host_of "$id"):$rdir/$pullp/" "$proj/$pullp/"
+    echo "rp: done on $name in ${t}s render, $(( $(date +%s) - t0 ))s total; pulled $pullp" ;;
+  pool)
+    exec node "$HERE/rp_pool.mjs" "$@" ;;
+  *) die "unknown mode $mode" ;;
+esac

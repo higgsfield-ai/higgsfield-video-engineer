@@ -1,0 +1,4 @@
+# textures, titles, glow (examples/*/tools/textures.py, title_ofl.py, glow.py)
+numpy
+pillow
+scipy

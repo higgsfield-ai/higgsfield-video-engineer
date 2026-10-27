@@ -1,0 +1,4 @@
+# music bar map (tools/beatmap.py). Pulls soxr (LGPL-2.1+) and certifi (MPL-2.0)
+numpy
+scipy
+librosa

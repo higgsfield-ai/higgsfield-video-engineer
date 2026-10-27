@@ -1,0 +1,53 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+  schedule: [{ cron: '0 6 * * 1' }]  # weekly: catch newly published vulnerabilities
+permissions: { contents: read }
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: { fetch-depth: 0 }
+      - name: gitleaks (history + files)
+        run: |
+          V=8.30.1; SHA=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -sSLo gl.tgz https://github.com/gitleaks/gitleaks/releases/download/v$V/gitleaks_${V}_linux_x64.tar.gz
+          echo "$SHA  gl.tgz" | sha256sum -c - && tar -xzf gl.tgz gitleaks && rm gl.tgz
+          ./gitleaks git --redact --exit-code 1 . && ./gitleaks dir --redact --exit-code 1 .
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36  # v2.7.0
+        with:
+          scan-args: |-
+            --lockfile=skills/code-based-films/engine/package-lock.json
+            --lockfile=requirements.txt:skills/code-based-films/requirements/images.txt
+            --lockfile=requirements.txt:skills/code-based-films/requirements/sound.txt
+            --lockfile=requirements.txt:skills/code-based-films/requirements/beatmap.txt
+
+  checks:
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, macos-latest, windows-latest] }
+    runs-on: ${{ matrix.os }}
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with: { node-version: '22.12' }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with: { python-version: '3.12' }
+      - name: syntax
+        run: |
+          git ls-files '*.mjs' '*.js' | while read -r f; do node --check "$f" || exit 1; done
+          for f in $(git ls-files '*.sh') bin/hve skills/code-based-films/tools/rp; do bash -n "$f" || exit 1; done
+          python -m py_compile $(git ls-files '*.py')
+      - name: setup (no GPU on CI runners; checks install only)
+        run: bash skills/code-based-films/setup.sh
+      - name: example dry run (CPU only)
+        run: node examples/felt-good-morning/render_local.mjs --dry-run

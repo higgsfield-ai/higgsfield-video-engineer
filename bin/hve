@@ -1,0 +1,41 @@
+#!/bin/bash
+# hve — Higgsfield Video Engineer: one entry point for setup, renders, films and new projects.
+set -euo pipefail
+KIT=$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)
+SKILL=skills/code-based-films
+EXAMPLE=examples/felt-good-morning
+
+usage() {
+  cat <<'MSG'
+hve <command> [args]
+
+  setup                         check Node + Chrome, install the engine's pinned packages
+  hello                         render the first test frame (hello.png) on your GPU
+  render <scene.json> [opts]    engine CLI (single frame or 'f_%04d.json' --frames a-b); see skills/code-based-films/engine/README.md
+  new <name>                    start a film: copy the example into projects/<name>
+  film <dir> [opts]             render a film project (--dry-run | --quality preview|final | --frames a-b | --encode)
+  example [opts]                same as: hve film examples/felt-good-morning [opts]
+  check                         GPU kit check: hello frame, craft-materials proof, white-furnace test
+  skill                         install the code-based-films agent skill (npx skills add)
+MSG
+}
+
+cmd=${1:-help}; [ $# -gt 0 ] && shift
+cd "$KIT"
+case "$cmd" in
+  setup)   exec "$SKILL/setup.sh" ;;
+  hello)   exec node "$SKILL/engine/bin/render.mjs" "$SKILL/engine/examples/hello.json" --spp 64 --out hello.png ;;
+  render)  exec node "$SKILL/engine/bin/render.mjs" "$@" ;;
+  film)    dir=${1:?usage: hve film <project_dir> [opts]}; shift; exec node "$dir/render_local.mjs" "$@" ;;
+  example) exec node "$EXAMPLE/render_local.mjs" "$@" ;;
+  new)
+    name=${1:?usage: hve new <name>}; dst="projects/$name"
+    [ -e "$dst" ] && { echo "$dst already exists" >&2; exit 1; }
+    mkdir -p projects && rsync -a --exclude out "$EXAMPLE/" "$dst/"
+    echo "created $dst (a copy of the example: replace BEATS.md, refs/, assets/, shots/ and music/ with your film)"
+    echo "next: hve film $dst --dry-run" ;;
+  check)   cd "$SKILL/engine" && exec node tests/kit_check.mjs "${1:-tests/out/kit}" ;;
+  skill)   exec npx skills add higgsfield-ai/higgsfield-video-engineer --skill code-based-films "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac
