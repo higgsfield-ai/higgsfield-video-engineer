@@ -1,0 +1,4 @@
+# all optional Python tools: textures, titles, glow, sound effects (examples/*/tools/), music bar map (tools/beatmap.py)
+numpy
+pillow
+scipy

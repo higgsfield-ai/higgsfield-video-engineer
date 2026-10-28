@@ -21,7 +21,7 @@ An AI agent can run the whole process for you, from the story to the finished vi
 ## Get started
 
 You need: Node.js 22.12 or newer, Google Chrome, and FFmpeg (to make the final video). Python 3.11+ is optional; the example
-film uses it for textures, titles and sound (packages listed in `skills/code-based-films/requirements/`).
+film uses it for textures, titles and sound (packages listed in `skills/code-based-films/requirements.txt`).
 
 ```bash
 git clone https://github.com/higgsfield-ai/higgsfield-video-engineer

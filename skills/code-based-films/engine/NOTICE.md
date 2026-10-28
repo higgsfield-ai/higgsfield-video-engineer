@@ -9,18 +9,14 @@ The renderer source (src/, web/, bin/, tests/, proofs/) was written for Higgsfie
 
 ## Optional Python packages (not bundled)
 
-The Python tools are optional. Their packages are installed by the user from PyPI (`../requirements/`), never shipped in
+The Python tools are optional. Their packages are installed by the user from PyPI (`../requirements.txt`), never shipped in
 this repo. Used unmodified as separate libraries; their licences apply to those packages only.
 
 | Package | Licence | Needed by |
 |---|---|---|
-| numpy, scipy | BSD-3-Clause | images, beatmap |
-| pillow | MIT-CMU | images |
-| soundfile | BSD-3-Clause; its bundled libsndfile is LGPL-2.1 | beatmap (librosa dependency) |
-| librosa | ISC | beatmap |
-| soxr | LGPL-2.1-or-later | beatmap (librosa dependency) |
-| certifi | MPL-2.0 | beatmap (librosa → pooch → requests) |
-| torch, beat_this | BSD-3-Clause, MIT | beatmap's optional neural cross-check only; not in `requirements/` |
+| numpy, scipy | BSD-3-Clause | all Python tools |
+| pillow | MIT-CMU | textures, titles |
+| torch, beat_this | BSD-3-Clause, MIT | `beatmap.py`'s optional neural cross-check only; not in `requirements.txt` |
 
 ## Published methods and constants
 - **Tone mapping, AgX** (`web/post.wgsl`, `agx()`): a polynomial fit of Troy Sobotka's AgX, adapted from Benjamin Wrensch's "Minimal AgX implementation" (https://iolite-engine.com/blog_posts/minimal_agx_implementation, MIT, notice below); its values come from https://github.com/sobotka/AgX.

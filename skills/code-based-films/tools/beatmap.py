@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """beatmap.py — bar map of a music track for code edits (owner: AUDIO/TOOLS).
 
-Usage (run with the librosa venv, -I when the input is downloaded media):
+Usage (numpy + scipy only, requirements.txt; use -I when the input is downloaded media):
   python -I tools/beatmap.py <track|video> [--start s] [--dur d] [--fps 24] --out edits/x/beatmap.json
   python -I tools/beatmap.py <track> --choose-window 15 [--fps 24]          # suggest best 15 s windows
 Inputs: anything ffmpeg decodes (mp3, wav, m4a, aac, flac, aif, ogg, mp4/mov audio). Decoded by ffmpeg → mono f32 22.05 kHz.
 
 Method (editing-method.md §1–2): find the BAR, not just the BPM.
-  * Tempo: candidates from librosa + low-band (kick) autocorrelation, every candidate also tried at ×2 / ×½ / ×1.5 / ×⅔;
+  * Tempo: candidates from a tempogram (autocorrelation of the onset envelope) + low-band (kick) autocorrelation, every candidate also tried at ×2 / ×½ / ×1.5 / ×⅔;
     each is fitted as a fixed grid (BPM ±1.5 %, phase) and scored by on-beat vs off-beat (half-beat) onset CONTRAST on the
     full band and on the kick band, plus a weak tempo prior (~115 BPM). Half/double alternatives and their scores are reported.
   * Downbeat phase: of the 4 possible bar phases, the one whose beat-1s carry the most low-band (<150 Hz) energy.
@@ -29,7 +29,9 @@ beatmap.json schema (runtime reads the flat arrays; details for tools/humans):
 """
 import argparse, json, math, os, subprocess, sys
 import numpy as np
-import librosa
+from numpy.lib.stride_tricks import as_strided, sliding_window_view
+import scipy.fft as sfft
+import scipy.signal as ss
 
 FFMPEG = os.environ.get('FFMPEG', 'ffmpeg')
 FFPROBE = os.environ.get('FFPROBE', 'ffprobe')
@@ -63,28 +65,101 @@ def probe_duration(path):
 def db(x): return 20 * np.log10(np.maximum(x, 1e-9))
 
 
+# ----------------------------------------------------------------------------- dsp
+# numpy/scipy versions of the librosa 1.0 defaults this tool used before (Slaney mel, centred periodic-Hann STFT,
+# mean-aggregated spectral flux, autocorrelation tempogram, greedy peak picking).
+BLOCK = 2048  # frames per block, bounds memory on long tracks
+
+def stft_mag(y, n_fft, hop):
+    y = np.pad(np.asarray(y, np.float32), n_fft // 2)
+    n = 1 + (len(y) - n_fft) // hop
+    w = ss.get_window('hann', n_fft, fftbins=True).astype(np.float32)[:, None]
+    fr = as_strided(y, (n_fft, n), (y.strides[0], y.strides[0] * hop), writeable=False)
+    return np.concatenate([np.abs(sfft.rfft(fr[:, i:i + BLOCK] * w, axis=0)) for i in range(0, n, BLOCK)], axis=1)
+
+def fft_freqs(n_fft): return np.fft.rfftfreq(n_fft, 1 / SR)
+
+def hz_to_mel(f):
+    f = np.asarray(f, float)
+    return np.where(f >= 1000, 15 + np.log(np.maximum(f, 1e-9) / 1000) / (np.log(6.4) / 27), f / (200 / 3))
+
+def mel_to_hz(m):
+    m = np.asarray(m, float)
+    return np.where(m >= 15, 1000 * np.exp(np.log(6.4) / 27 * (m - 15)), m * (200 / 3))
+
+def mel_freqs(n, fmax): return mel_to_hz(np.linspace(0, hz_to_mel(fmax), n))
+
+def mel_basis(n_mels, n_fft, fmax):
+    mf = mel_freqs(n_mels + 2, fmax); fd = np.diff(mf); r = mf[:, None] - fft_freqs(n_fft)[None, :]
+    w = np.maximum(0, np.minimum(-r[:-2] / fd[:-1, None], r[2:] / fd[1:, None]))
+    return w * (2 / (mf[2:] - mf[:-2]))[:, None]
+
+def power_to_db(S, top_db=80.0):
+    d = 10 * np.log10(np.maximum(1e-10, S)) - 10 * np.log10(max(1e-10, float(S.max())))
+    return np.maximum(d, d.max() - top_db)
+
+def onset_strength(S_db, n_fft=2048, hop=HOP):
+    e = np.maximum(0, S_db[:, 1:] - S_db[:, :-1]).mean(0)
+    return np.r_[np.zeros(1 + n_fft // (2 * hop)), e][:S_db.shape[1]]
+
+def rms_from_stft(S, n_fft):
+    x = S.astype(float) ** 2; x[0] *= 0.5; x[-1] *= 0.5
+    return np.sqrt(2 * x.sum(0) / n_fft ** 2)
+
+def centroid(S, n_fft):
+    tot = S.sum(0); tot[tot < np.finfo(S.dtype).tiny] = 1
+    return fft_freqs(n_fft) @ S / tot
+
+def tempogram_bpm(env, hop=HOP, start_bpm=120.0, max_tempo=320.0, ac_size=8.0):
+    """global tempo: mean autocorrelation tempogram of env, log-normal prior around start_bpm"""
+    win = int(ac_size * SR) // hop; n = len(env)
+    e = np.pad(np.asarray(env, float), win // 2, mode='linear_ramp', end_values=0)
+    fr = sliding_window_view(e, win)[:n].T; w = ss.get_window('hann', win, fftbins=True)[:, None]
+    n_pad = sfft.next_fast_len(2 * win - 1, real=True); tg = np.zeros(win)
+    for i in range(0, n, BLOCK):
+        ac = sfft.irfft(np.abs(sfft.rfft(fr[:, i:i + BLOCK] * w, n=n_pad, axis=0)) ** 2, n=n_pad, axis=0)[:win]
+        mx = np.abs(ac).max(0); mx[mx < np.finfo(float).tiny] = 1
+        tg += (ac / mx).sum(1)
+    tg /= n
+    bpms = np.r_[np.inf, 60.0 * SR / (hop * np.arange(1.0, win))]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        prior = -0.5 * (np.log2(bpms) - np.log2(start_bpm)) ** 2
+        prior[:int(np.argmax(bpms < max_tempo))] = -np.inf
+        return float(bpms[np.argmax(np.log1p(1e6 * tg) + prior)])
+
+def peak_pick(x, pre_max, post_max, pre_avg, post_avg, delta, wait):
+    """indices that are the local max of [i-pre_max, i+post_max) and >= local mean + delta, at least wait+1 apart"""
+    n = len(x); i = np.arange(n)
+    mx = sliding_window_view(np.pad(x, (pre_max, post_max), constant_values=-np.inf), pre_max + post_max)[:n].max(1)
+    c = np.r_[0, np.cumsum(x)]; lo = np.maximum(0, i - pre_avg); hi = np.minimum(n, i + post_avg)
+    cand = np.flatnonzero((x == mx) & (x >= (c[hi] - c[lo]) / (hi - lo) + delta))
+    out, last = [], -np.inf
+    for k in cand:
+        if k > last + wait: out.append(k); last = k
+    return np.array(out, int)
+
+
 # ----------------------------------------------------------------------------- features
 def features(y):
-    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
-    freqs = librosa.fft_frequencies(sr=SR, n_fft=2048)
-    mel = librosa.feature.melspectrogram(S=S ** 2, sr=SR, n_mels=96, fmax=11025)
-    mel_f = librosa.mel_frequencies(n_mels=96, fmax=11025)
-    mel_db = librosa.power_to_db(mel, ref=np.max)
+    S = stft_mag(y, 2048, HOP)
+    freqs = fft_freqs(2048)
+    mel = mel_basis(96, 2048, 11025) @ S.astype(float) ** 2
+    mel_f = mel_freqs(96, 11025)
+    mel_db = power_to_db(mel)
     lowb = mel_f < 150
     midb = (mel_f >= 150) & (mel_f < 4000)
-    env = librosa.onset.onset_strength(S=mel_db, sr=SR, hop_length=HOP)
-    env_low = librosa.onset.onset_strength(S=mel_db[lowb], sr=SR, hop_length=HOP)
-    env_mid = librosa.onset.onset_strength(S=mel_db[midb], sr=SR, hop_length=HOP)
-    rms = librosa.feature.rms(S=S, frame_length=2048, hop_length=HOP)[0]
+    env = onset_strength(mel_db)
+    env_low = onset_strength(mel_db[lowb])
+    env_mid = onset_strength(mel_db[midb])
+    rms = rms_from_stft(S, 2048)
     low_lin = np.sqrt((S[freqs < 150] ** 2).sum(0)) / 2048
-    cent = librosa.feature.spectral_centroid(S=S, sr=SR)[0]
+    cent = centroid(S, 2048)
     # fine flux for transient timing (log-compressed magnitude, positive diff, max-filtered reference = superflux-ish)
-    Sf = np.abs(librosa.stft(y, n_fft=1024, hop_length=HOP_FINE))
+    Sf = stft_mag(y, 1024, HOP_FINE)
     L = np.log1p(10 * Sf)
     ref = np.maximum.reduce([np.roll(L, k, axis=0) for k in (-1, 0, 1)])
     flux = np.r_[0, np.maximum(0, L[:, 1:] - ref[:, :-1]).sum(0)]
     # attack envelope: 1 ms hop, log energy of the >60 Hz signal, 4 ms smoothing (for sample-accurate attack times)
-    import scipy.signal as ss
     bb, aa = ss.butter(2, 60 / (SR / 2), 'high'); yh = ss.lfilter(bb, aa, y)
     h = SR // 1000; nn = len(yh) // h
     e1 = np.log(np.maximum((yh[:nn * h].reshape(nn, h) ** 2).mean(1), 1e-12))
@@ -117,7 +192,7 @@ def attack(F, t, back=0.05, fwd=0.025):
     return (a + int(np.argmax(d))) / fa
 
 
-# Optional neural cross-check, off by default: needs torch + beat_this (not in requirements/) and BEATMAP_NN_CKPT set
+# Optional neural cross-check, off by default: needs torch + beat_this (not in requirements.txt) and BEATMAP_NN_CKPT set
 # to a beat_this checkpoint you trust (the official CPJKU release). It loads with torch.load(weights_only=True).
 NN_CKPT = os.environ.get('BEATMAP_NN_CKPT', '')
 
@@ -232,8 +307,8 @@ def estimate_tempo(F, dur):
     seeds = []
     t_lib = None
     try:
-        t_lib = float(np.atleast_1d(librosa.feature.tempo(onset_envelope=F['env'], sr=SR, hop_length=HOP))[0])
-        seeds.append(('librosa', t_lib))
+        t_lib = tempogram_bpm(F['env'])
+        seeds.append(('tempogram', t_lib))
     except Exception:
         pass
     if F.get('nn') is not None and len(F['nn'][0]) >= 6:
@@ -276,7 +351,7 @@ def estimate_tempo(F, dur):
 # ----------------------------------------------------------------------------- analysis
 def onset_times(F, delta=0.25):
     env = F['env']
-    pk = librosa.util.peak_pick(env / (env.max() + 1e-9), pre_max=3, post_max=3, pre_avg=10, post_avg=10,
+    pk = peak_pick(env / (env.max() + 1e-9), pre_max=3, post_max=3, pre_avg=10, post_avg=10,
                                 delta=delta * np.std(env) / (env.max() + 1e-9) * 3, wait=4)
     ts = np.array([attack(F, p / F['fps_a'], 0.05, 0.02) for p in pk])
     return ts, env[pk] if len(pk) else np.zeros(0)
@@ -551,7 +626,7 @@ def analyze(y, fps, ctx0=0.0, film_dur=None, label=''):
     out = dict(
         source=label, fps=fps, start=round(t0, 4), duration=round(fd, 4),
         bpm=bpm, beat=round(T, 5), bar=round(4 * T, 5), meter='4/4 (assumed)',
-        librosa_bpm=round(t_lib, 2) if t_lib else None,
+        tempogram_bpm=round(t_lib, 2) if t_lib else None,
         tempo_candidates=cands[:6],
         tempo_ambiguous=(not cands[0].get('forced')) and bool(any(c['score'] > cands[0]['score'] - 1.0 and abs(math.log2(c['bpm'] / cands[0]['bpm'])) > 0.4
                                  for c in cands[1:])) or dur_y < 9.0 or cands[0]['hit_frac'] < 0.75,
@@ -584,7 +659,7 @@ def to_md(m):
     L.append(f"# Beat map — {os.path.basename(m['source'])}")
     L.append(f"window: start {m['start']} s in file, {m['duration']} s, {m['fps']} fps (film t=0 ↔ file {m['start']} s)\n")
     L.append(f"**BPM {m['bpm']}** · beat {m['beat']*m['fps']:.2f} f ({m['beat']:.4f} s) · bar {m['bar']*m['fps']:.2f} f ({m['bar']:.3f} s) · "
-             f"librosa alone {m['librosa_bpm']} · downbeat phase {m['downbeat_phase']} (confidence {m['downbeat_confidence']})"
+             f"tempogram alone {m['tempogram_bpm']} · downbeat phase {m['downbeat_phase']} (confidence {m['downbeat_confidence']})"
              + f" · beat_this downbeat agreement {m.get('nn_downbeat_agreement')}"
              + (f" · **TEMPO LOW-CONFIDENCE — alternative {m.get('tempo_alternative')} BPM; verify half/double by ear on the kicks, then rerun with --bpm**" if m['tempo_ambiguous'] else ''))
     L.append('\nTempo candidates (score = on/off-beat contrast full+kick+snare, grid fit, prior):\n')
@@ -718,11 +793,12 @@ def main():
     m, _ = analyze(y, a.fps, ctx, dur, a.track)
     m['start'] = round(a.start, 4)
     out = a.out or os.path.splitext(os.path.basename(a.track))[0] + '.beatmap.json'
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, 'w') as fh: json.dump(m, fh, ensure_ascii=False, indent=1)
     md = os.path.splitext(out)[0] + '.md'
     with open(md, 'w') as fh: fh.write(to_md(m))
     c2 = m['tempo_candidates'][1] if len(m['tempo_candidates']) > 1 else None
-    print(f"{os.path.basename(a.track)}: BPM {m['bpm']} (librosa {m['librosa_bpm']}; next {c2['bpm'] if c2 else '-'} @ {c2['score'] if c2 else '-'})"
+    print(f"{os.path.basename(a.track)}: BPM {m['bpm']} (tempogram {m['tempogram_bpm']}; next {c2['bpm'] if c2 else '-'} @ {c2['score'] if c2 else '-'})"
           f"{(' LOW-CONF alt ' + str(m['tempo_alternative'])) if m['tempo_ambiguous'] else ''} | nn-downbeat agree {m['nn_downbeat_agreement']} | downbeat conf {m['downbeat_confidence']} | drop {m['frames']['drop']} | "
           f"{len(m['bars'])} bars, {len(m['hits'])} hits, {len(m['stops'])} stops, {len(m['risers'])} risers, {len(m['pickups'])} pickups")
     print(f'wrote {out} and {md}')

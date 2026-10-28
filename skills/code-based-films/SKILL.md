@@ -19,7 +19,7 @@ against. They never appear in the frame and are never used as textures.
 |---|---|
 | `setup.sh` | One-time setup on this machine: checks Node ≥ 22.12 and Chrome, installs the engine's two pinned npm packages into `engine/node_modules`. Run `bash "$SKILL/setup.sh"` before the first render. |
 | `engine/` | Our GPU path tracer: WebGPU compute (WGSL) in headless Chrome on the local GPU, driven from Node via `puppeteer-core`. `engine/bin/render.mjs` is the CLI (single frames and `--frames a-b` sequences). `engine/README.md` documents the API: `Scene`, materials, lights, media, camera, `PathTracer.launch/render/renderSequence`. |
-| `requirements/` | Locked Python packages (with checksums) for the optional tools, one file per group: `images.txt` (textures, titles, sound effects), `beatmap.txt` (`tools/beatmap.py`). Install with `python3 -m pip install --require-hashes -r "$SKILL/requirements/<group>.txt"`. |
+| `requirements.txt` | Locked Python packages (with checksums) for all optional tools: numpy, pillow, scipy. Install with `python3 -m pip install --require-hashes -r "$SKILL/requirements.txt"`. |
 | `tools/beatmap.py` | Music analysis: BPM, downbeats, bars, sections, drop. Writes the bar map the film is timed to. |
 | `tools/encode.sh` | FFmpeg encode of frame sequences plus title overlay plus mixed audio. |
 | `tools/rp`, `tools/rp_pool.mjs`, `tools/rp_pod/` | Optional: remote rendering on a Runpod pool of RTX 4090 pods (setup, job runner, chunk pool). Not needed for anything. |
