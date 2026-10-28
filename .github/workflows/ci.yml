@@ -27,7 +27,6 @@ jobs:
           scan-args: |-
             --lockfile=skills/code-based-films/engine/package-lock.json
             --lockfile=requirements.txt:skills/code-based-films/requirements/images.txt
-            --lockfile=requirements.txt:skills/code-based-films/requirements/sound.txt
             --lockfile=requirements.txt:skills/code-based-films/requirements/beatmap.txt
 
   checks:

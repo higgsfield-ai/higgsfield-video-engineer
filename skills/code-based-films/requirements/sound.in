@@ -1,4 +1,0 @@
-# sound effects and mix (examples/*/tools/sfx.py). soundfile bundles libsndfile (LGPL-2.1)
-numpy
-scipy
-soundfile

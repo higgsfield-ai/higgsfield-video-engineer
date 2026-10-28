@@ -4,10 +4,10 @@ without it the output is effects only).
   Environment: MUSIC=<audio file>, MUSIC_START=<seconds into the file>, FFMPEG=<ffmpeg binary>.
   python -I tools/sfx.py <out.wav> [--no-music] [--stems dir]
 """
-import sys, os, subprocess, json, tempfile
+import sys, os, subprocess, json
 import numpy as np
 from scipy import signal
-import soundfile as sf
+from scipy.io import wavfile
 
 SR = 48000
 DUR = 20.0
@@ -147,9 +147,9 @@ def place(bus, t0, x, db):
     if end > i: bus[i:end] += x[:end - i] * g
 
 def music_bus():
-    tmp = os.path.join(tempfile.gettempdir(), 'sfx_music_window.wav')
-    subprocess.run([os.environ.get('FFMPEG', 'ffmpeg'), '-v', 'error', '-y', '-ss', str(MUSIC_START), '-t', str(DUR + 0.5), '-i', MUSIC, '-ac', '2', '-ar', str(SR), tmp], check=True)
-    m, _ = sf.read(tmp); m = m[:N]
+    raw = subprocess.run([os.environ.get('FFMPEG', 'ffmpeg'), '-v', 'error', '-ss', str(MUSIC_START), '-t', str(DUR + 0.5), '-i', MUSIC,
+                          '-ac', '2', '-ar', str(SR), '-f', 'f32le', '-'], check=True, capture_output=True).stdout
+    m = np.frombuffer(raw, np.float32).reshape(-1, 2).astype(np.float64)[:N]
     if len(m) < N: m = np.pad(m, ((0, N - len(m)), (0, 0)))
     t = np.arange(N) / SR
     # the gag: the music stops dead as the sun drops (13.62) and returns on the downbeat f376 (15.657)
@@ -180,10 +180,10 @@ def main():
         mix = mix + music_bus() * 0.62
     peak = np.max(np.abs(mix)); mix = mix / max(1.0, peak / 0.95)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    sf.write(out, mix.astype(np.float32), SR, subtype='FLOAT')
+    wavfile.write(out, SR, mix.astype(np.float32))
     if '--stems' in sys.argv:
         d = sys.argv[sys.argv.index('--stems') + 1]; os.makedirs(d, exist_ok=True)
-        sf.write(os.path.join(d, 'sfx.wav'), st.astype(np.float32), SR, subtype='FLOAT')
+        wavfile.write(os.path.join(d, 'sfx.wav'), SR, st.astype(np.float32))
     print('wrote', out, 'peak', round(float(np.max(np.abs(mix))), 3))
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-# textures, titles, glow (examples/*/tools/textures.py, title_ofl.py, glow.py)
+# textures, titles, glow, sound effects (examples/*/tools/textures.py, title_ofl.py, glow.py, sfx.py)
 numpy
 pillow
 scipy

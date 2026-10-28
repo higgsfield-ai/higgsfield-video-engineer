@@ -14,9 +14,9 @@ this repo. Used unmodified as separate libraries; their licences apply to those 
 
 | Package | Licence | Needed by |
 |---|---|---|
-| numpy, scipy | BSD-3-Clause | all groups |
+| numpy, scipy | BSD-3-Clause | images, beatmap |
 | pillow | MIT-CMU | images |
-| soundfile | BSD-3-Clause; its bundled libsndfile is LGPL-2.1 | sound, beatmap |
+| soundfile | BSD-3-Clause; its bundled libsndfile is LGPL-2.1 | beatmap (librosa dependency) |
 | librosa | ISC | beatmap |
 | soxr | LGPL-2.1-or-later | beatmap (librosa dependency) |
 | certifi | MPL-2.0 | beatmap (librosa → pooch → requests) |

@@ -39,7 +39,7 @@ node -e "require('$SKILL/engine/node_modules/puppeteer-core/package.json')" && o
 
 echo "4/4 Python (optional: textures, title, sound for the example)"
 if command -v python3 >/dev/null && python3 -c 'import numpy, PIL' 2>/dev/null; then ok "python3 with numpy + pillow"
-else warn "for textures, titles, sound and tools/beatmap.py: python3 -m pip install --require-hashes -r $SKILL/requirements/<images|sound|beatmap>.txt"; fi
+else warn "for textures, titles, sound and tools/beatmap.py: python3 -m pip install --require-hashes -r $SKILL/requirements/<images|beatmap>.txt"; fi
 command -v ffmpeg >/dev/null && ok "ffmpeg found" || warn "ffmpeg not found (needed only to encode the film)"
 
 cat <<MSG
