@@ -12,7 +12,7 @@ import { packScene } from './pack.mjs';
 import { writePNG16, writePFM, writeDepthPFM } from './image.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const webDir = path.resolve(here, '../web');
+const webDir = fs.realpathSync(path.resolve(here, '../web'));
 // puppeteer-core is resolved from NODE_PATH (first entry) or from engine/node_modules (npm install in engine/)
 const libs = (process.env.NODE_PATH || '').split(path.delimiter).filter(Boolean)[0] || path.resolve(here, '../node_modules');
 const require = createRequire(path.join(libs, 'x.js'));
@@ -69,9 +69,10 @@ export class PathTracer {
     if (req.method === 'POST' && parts[0] === 'result') return this._result(req, res, parts[1], parts[2]);
     if (req.method !== 'GET') return end(405);
     if (parts[0] === 'web') {
-      const f = path.resolve(webDir, parts.slice(1).join('/'));
+      let f;  // real path, so a symlink inside web/ cannot point outside it
+      try { f = fs.realpathSync(path.resolve(webDir, parts.slice(1).join('/'))); } catch { return end(404); }
       const rel = path.relative(webDir, f);
-      if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !fs.statSync(f, { throwIfNoEntry: false })?.isFile()) return end(404);
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !fs.statSync(f).isFile()) return end(404);
       res.writeHead(200, { 'Content-Type': TYPES[path.extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
       return fs.createReadStream(f).pipe(res);
     }

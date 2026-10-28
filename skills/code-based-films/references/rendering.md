@@ -108,8 +108,9 @@ there in headless Chrome with WebGPU on the pod's NVIDIA GPU (Vulkan), and pulls
 
 If the probe reports a fallback or software adapter on a pod, fix that before rendering. Each job pushes only what it
 needs (engine sources, the asset modules the shots use, the shot files, the simulation cache frames of the chunk), and
-each pool worker gets its own stage folder. Uploads use an allowlist (`PUSH_FILTER` in `tools/rp`): code, JSON, WGSL,
-HTML and images only, never hidden files, keys or links outside the project. A new asset file type must be added there.
+each pool worker gets its own stage folder. Uploads use an allowlist (`PUSH_ALLOW` in `tools/rp`): code, textures, `.hdr`/`.pfm`, `.ptm`, `.ptv`, and scene
+JSON only as `scene*.json`, `f_*.json` or inside `shots/`/`scenes/`. Credential-like names, hidden files, keys and links
+outside the project are never sent. Add other inputs with `RP_PUSH_INCLUDE='pattern ...'`.
 
 **Credentials** come from the environment only: `RUNPOD_API_KEY` (read by `runpodctl`) and `RP_SSH_KEY` (the SSH key
 registered with Runpod). Never write them into scripts, the project, logs that ship, or docs. Do not paste pod ids or

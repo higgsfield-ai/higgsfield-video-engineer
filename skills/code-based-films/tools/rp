@@ -50,11 +50,17 @@ ssh_opts() { echo "-i $KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new 
 pssh() { local id=$1; shift; read -r ip port < <(addr "$id"); ssh $(ssh_opts) -p "$port" root@"$ip" "$@"; }
 rsync_e() { local id=$1; read -r ip port < <(addr "$id"); echo "ssh $(ssh_opts) -p $port"; }
 host_of() { read -r ip port < <(addr "$1"); echo "root@$ip"; }
-# Upload allowlist: only code, scene data and images. Hidden files (.env, .ssh, .npmrc), key files, node_modules and
-# symlinks that point outside the folder are never sent.
-PUSH_FILTER=(--safe-links --prune-empty-dirs --exclude '.*' --exclude node_modules --exclude renders --exclude '*.pem' --exclude '*.key'
-  --exclude 'id_*' --include '*/' --include '*.mjs' --include '*.js' --include '*.json' --include '*.wgsl' --include '*.html'
-  --include '*.png' --include '*.jpg' --include '*.jpeg' --include '*.hdr' --include '*.bin' --include '*.pfm' --exclude '*')
+# Upload allowlist: only render inputs. Code (.mjs .js .wgsl .html), textures (.png .jpg .jpeg), environments (.hdr .pfm),
+# meshes (.ptm), volumes (.ptv), and scene JSON only by name or folder (scene*.json, *.scene.json, f_*.json, shots/,
+# scenes/, engine/examples/). Never: hidden files, key/credential-like names, node_modules, out/, renders/, symlinks
+# pointing outside the folder. Add more with RP_PUSH_INCLUDE='pattern ...' (rsync include patterns).
+PUSH_DENY=('.*' node_modules renders out docs '*.pem' '*.key' '*.p12' '*.pfx' 'id_*' '*credential*' '*secret*' '*token*'
+  '*passw*' '*service-account*' '*service_account*' '*api[-_]key*' '*apikey*' '*private*' '*auth*')
+PUSH_ALLOW=('*.mjs' '*.js' '*.wgsl' '*.html' '*.png' '*.jpg' '*.jpeg' '*.hdr' '*.pfm' '*.ptm' '*.ptv'
+  'scene*.json' '*.scene.json' 'f_*.json' 'shots/**.json' 'scenes/**.json' 'engine/examples/*.json' ${RP_PUSH_INCLUDE:-})
+PUSH_FILTER=(--safe-links --prune-empty-dirs)
+for p in "${PUSH_DENY[@]}"; do PUSH_FILTER+=(--exclude "$p"); done
+PUSH_FILTER+=(--include '*/'); for p in "${PUSH_ALLOW[@]}"; do PUSH_FILTER+=(--include "$p"); done; PUSH_FILTER+=(--exclude '*')
 push() { local id=$1 src=$2 dst=$3; shift 3; COPYFILE_DISABLE=1 rsync -a "$@" "${PUSH_FILTER[@]}" -e "$(rsync_e "$id")" "$src" "$(host_of "$id"):$dst"; }
 
 lock_try() {  # atomic per-pod lock; stale locks (dead pid) are taken over
