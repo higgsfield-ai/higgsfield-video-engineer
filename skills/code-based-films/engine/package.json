@@ -13,7 +13,7 @@
     "hello": "node bin/render.mjs examples/hello.json --spp 64 --out hello.png"
   },
   "dependencies": {
-    "puppeteer-core": "25.15.0",
+    "puppeteer-core": "25.16.0",
     "three": "0.186.1"
   },
   "engines": {
