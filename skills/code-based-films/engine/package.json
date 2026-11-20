@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "puppeteer-core": "25.15.0",
-    "three": "0.186.1"
+    "three": "0.187.0"
   },
   "engines": {
     "node": ">=22.12.0"
